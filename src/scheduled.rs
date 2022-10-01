@@ -1,14 +1,13 @@
 use crate::{periodic::PeriodicJob, RedisPool, UnitOfWork};
-use slog::debug;
+use tracing::debug;
 
 pub struct Scheduled {
     redis: RedisPool,
-    logger: slog::Logger,
 }
 
 impl Scheduled {
-    pub fn new(redis: RedisPool, logger: slog::Logger) -> Self {
-        Self { redis, logger }
+    pub fn new(redis: RedisPool) -> Self {
+        Self { redis }
     }
 
     pub async fn enqueue_jobs(
@@ -30,9 +29,10 @@ impl Scheduled {
                 if redis.zrem(sorted_set.clone(), job.clone()).await? {
                     let work = UnitOfWork::from_job_string(job)?;
 
-                    debug!(self.logger, "Enqueueing job";
-                        "class" => &work.job.class,
-                        "queue" => &work.queue
+                    debug!(
+                        class = work.job.class,
+                        queue = work.queue,
+                        "Enqueueing job"
                     );
 
                     work.enqueue_direct(&mut *redis).await?;
@@ -60,12 +60,13 @@ impl Scheduled {
                 let job = pj.into_job();
                 let work = UnitOfWork::from_job(job);
 
-                debug!(self.logger, "Enqueueing periodic job";
-                    "args" => &pj.args,
-                    "class" => &work.job.class,
-                    "queue" => &work.queue,
-                    "name" => &pj.name,
-                    "cron" => &pj.cron,
+                debug!(
+                    args = pj.args,
+                    class = work.job.class,
+                    queue = work.queue,
+                    name = pj.name,
+                    cron = pj.cron,
+                    "Enqueueing periodic job"
                 );
 
                 work.enqueue_direct(&mut conn).await?;

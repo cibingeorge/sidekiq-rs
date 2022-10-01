@@ -1,6 +1,6 @@
 use crate::{Counter, Job, RedisPool, UnitOfWork, WorkerRef};
 use async_trait::async_trait;
-use slog::error;
+use tracing::error;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -63,10 +63,10 @@ impl Chain {
         }
     }
 
-    pub(crate) fn new_with_stats(logger: slog::Logger, counter: Counter) -> Self {
+    pub(crate) fn new_with_stats(counter: Counter) -> Self {
         Self {
             stack: Arc::new(RwLock::new(vec![
-                Box::new(RetryMiddleware::new(logger)),
+                Box::new(RetryMiddleware::new()),
                 Box::new(StatsMiddleware::new(counter)),
                 Box::new(HandlerMiddleware),
             ])),
@@ -148,12 +148,11 @@ impl ServerMiddleware for HandlerMiddleware {
 }
 
 struct RetryMiddleware {
-    logger: slog::Logger,
 }
 
 impl RetryMiddleware {
-    fn new(logger: slog::Logger) -> Self {
-        Self { logger }
+    fn new() -> Self {
+        Self { }
     }
 }
 
@@ -190,13 +189,13 @@ impl ServerMiddleware for RetryMiddleware {
 
         // Attempt the retry.
         if retry_count < max_retries {
-            error!(self.logger,
-                "Scheduling job for retry in the future";
-                "status" => "fail",
-                "class" => &job.class,
-                "jid" => &job.jid,
-                "queue" => &job.queue,
-                "err" => &job.error_message,
+            error!(
+                status = "fail",
+                class = job.class,
+                jid = job.jid,
+                queue = job.queue,
+                err = job.error_message,
+                "Scheduling job for retry in the future",
             );
 
             UnitOfWork::from_job(job).reenqueue(&mut redis).await?;

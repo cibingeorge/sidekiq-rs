@@ -1,12 +1,11 @@
 use async_trait::async_trait;
 use bb8::Pool;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sidekiq::{
-    periodic, ChainIter, Job, Processor, RedisConnectionManager, ServerMiddleware, ServerResult,
+    ChainIter, Job, Processor, RedisConnectionManager, ServerMiddleware, ServerResult,
     Worker, WorkerRef,
 };
-use slog::{error, info, o, Drain};
+use tracing::{error, info};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -22,17 +21,16 @@ impl Worker<()> for HelloWorker {
 
 #[derive(Clone)]
 struct PaymentReportWorker {
-    logger: slog::Logger,
 }
 
 impl PaymentReportWorker {
-    fn new(logger: slog::Logger) -> Self {
-        Self { logger }
+    fn new() -> Self {
+        Self { }
     }
 
     async fn send_report(&self, user_guid: String) -> Result<(), Box<dyn std::error::Error>> {
         // TODO: Some actual work goes here...
-        info!(self.logger, "Sending payment report to user"; "user_guid" => user_guid, "class_name" => Self::class_name());
+        info!(user_guid = user_guid, class_name = Self::class_name(), "Sending payment report to user");
 
         Ok(())
     }
@@ -55,12 +53,11 @@ impl Worker<PaymentReportArgs> for PaymentReportWorker {
 }
 
 struct FilterExpiredUsersMiddleware {
-    logger: slog::Logger,
 }
 
 impl FilterExpiredUsersMiddleware {
-    fn new(logger: slog::Logger) -> Self {
-        Self { logger }
+    fn new() -> Self {
+        Self {}
     }
 }
 
@@ -91,11 +88,10 @@ impl ServerMiddleware for FilterExpiredUsersMiddleware {
         if let Ok((filter,)) = args {
             if filter.is_expired() {
                 error!(
-                    self.logger,
-                    "Detected an expired user, skipping this job";
-                    "class" => &job.class,
-                    "jid" => &job.jid,
-                    "user_guid" => filter.user_guid,
+                    class = job.class,
+                    jid = job.jid,
+                    user_guid = filter.user_guid,
+                    "Detected an expired user, skipping this job"
                 );
                 return Ok(());
             }
@@ -107,14 +103,9 @@ impl ServerMiddleware for FilterExpiredUsersMiddleware {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Logger
-    let decorator = slog_term::PlainSyncDecorator::new(std::io::stdout());
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let logger = slog::Logger::root(drain, o!());
-
     // Redis
     let manager = RedisConnectionManager::new("redis://127.0.0.1/")?;
-    let mut redis = Pool::builder().build(manager).await?;
+    let redis = Pool::builder().build(manager).await?;
     //
     //    tokio::spawn({
     //        let mut redis = redis.clone();
@@ -199,16 +190,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sidekiq server
     let mut p = Processor::new(
         redis.clone(),
-        logger.clone(),
         vec!["yolo".to_string(), "brolo".to_string()],
     );
 
     // Add known workers
     p.register(HelloWorker);
-    p.register(PaymentReportWorker::new(logger.clone()));
+    p.register(PaymentReportWorker::new());
 
     // Custom Middlewares
-    p.using(FilterExpiredUsersMiddleware::new(logger.clone()))
+    p.using(FilterExpiredUsersMiddleware::new())
         .await;
 
     //    // Reset cron jobs
