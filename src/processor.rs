@@ -64,7 +64,9 @@ impl Processor {
     pub async fn process_one(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             tokio::select! {
-                _ = self.shutdown.handle() => {},
+                _ = self.shutdown.handle() => {
+                    return Ok(());
+                },
                 res = self.process_one_tick_once() => {
                     if let WorkFetcher::NoWorkFound = res? {
                         continue;
@@ -171,11 +173,14 @@ impl Processor {
                 async move {
                     loop {
                         tokio::select! {
-                            _ = processor.shutdown.handle() => {},
+                            _ = processor.shutdown.handle() => {
+                                info!("Shutting down processor.");
+                                break;
+                            },
                             res = processor.process_one() => {
                                 if let Err(err) = res {
                                     error!("Error leaked out the bottom: {:?}", err);
-                                }        
+                                }
                             }
                         }
                     }
@@ -200,14 +205,17 @@ impl Processor {
 
                 loop {
                     tokio::select! {
-                        _ = shutdown.handle() => break,
+                        _ = shutdown.handle() => {
+                            info!("Shutting down stats publisher.");
+                            break;
+                        },
 
                         // TODO: Use process count to meet a 5 second avg.
                         _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                             if let Err(err) = stats_publisher.publish_stats(redis.clone()).await {
                                 error!("Error publishing processor stats: {:?}", err);
                             }
-        
+
                         }
                     }
                 }
@@ -224,14 +232,17 @@ impl Processor {
 
                 loop {
                     tokio::select! {
-                        _ = shutdown.handle() => break,
+                        _ = shutdown.handle() => {
+                            info!("Shutting down scheduled poller.");
+                            break;
+                        },
 
                         // TODO: Use process count to meet a 5 second avg.
                         _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                             if let Err(err) = sched.enqueue_jobs(chrono::Utc::now(), &sorted_sets).await {
                                 error!("Error in scheduled poller routine: {:?}", err);
                             }
-        
+
                         }
                     }
                 }
@@ -247,13 +258,16 @@ impl Processor {
 
                 loop {
                     tokio::select! {
-                        _ = shutdown.handle() => break,
+                        _ = shutdown.handle() => {
+                            info!("Shutting down periodic job poller.");
+                            break;
+                        },
 
                         // TODO: Use process count to meet a 30 second avg.
                         _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
                             if let Err(err) = sched.enqueue_periodic_jobs(chrono::Utc::now()).await {
                                 error!("Error in periodic job poller routine: {:?}", err);
-                            }        
+                            }
                         }
                     }
                 }
@@ -263,7 +277,10 @@ impl Processor {
         let shutdown = self.shutdown.clone();
         loop {
             tokio::select! {
-                _ = shutdown.handle() => break,
+                _ = shutdown.handle() => {
+                    info!("Shutting down sidekiq runner task.");
+                    break;
+                },
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
             }
         }
