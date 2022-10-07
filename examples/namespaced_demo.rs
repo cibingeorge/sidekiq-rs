@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use bb8::Pool;
 use sidekiq::{Processor, RedisConnectionManager, Worker};
+use tokio_shutdown::Shutdown;
 
 #[derive(Clone)]
 struct HelloWorker;
@@ -36,8 +37,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let shutdown = Shutdown::new().unwrap();
     // Sidekiq server
-    let mut p = Processor::new(redis.clone(), vec!["default".to_string()]);
+    let mut p = Processor::new(redis.clone(), vec!["default".to_string()], shutdown);
 
     // Add known workers
     p.register(HelloWorker);

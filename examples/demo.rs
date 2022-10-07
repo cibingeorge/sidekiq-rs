@@ -6,6 +6,7 @@ use sidekiq::{
     periodic, ChainIter, Job, Processor, RedisConnectionManager, RedisPool, ServerMiddleware,
     ServerResult, Worker, WorkerRef,
 };
+use tokio_shutdown::Shutdown;
 use tracing::{debug, error, info};
 use std::sync::Arc;
 
@@ -201,10 +202,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+    let shutdown = Shutdown::new().unwrap();
     // Sidekiq server
     let mut p = Processor::new(
         redis.clone(),
         vec!["yolo".to_string(), "brolo".to_string()],
+        shutdown,
     );
 
     // Add known workers

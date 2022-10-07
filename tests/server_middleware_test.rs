@@ -6,7 +6,16 @@ mod test {
         ChainIter, Job, Processor, RedisConnectionManager, RedisPool, ServerMiddleware,
         ServerResult, WorkFetcher, Worker, WorkerRef,
     };
+    use tokio_shutdown::Shutdown;
     use std::sync::{Arc, Mutex};
+    use once_cell::sync::OnceCell;
+
+    static INSTANCE: OnceCell<Shutdown> = OnceCell::new();
+    pub fn shutdown_handler() -> Shutdown {
+        INSTANCE.get_or_init(|| {
+            Shutdown::new().expect("Shutdown handler not initialized")
+        }).clone()
+    }
 
     #[async_trait]
     trait FlushAll {
@@ -30,8 +39,9 @@ mod test {
         let redis = Pool::builder().build(manager).await.unwrap();
         redis.flushall().await;
 
+        let shutdown = shutdown_handler();
         // Sidekiq server
-        let p = Processor::new(redis.clone(), vec![queue]);
+        let p = Processor::new(redis.clone(), vec![queue], shutdown);
 
         (p, redis)
     }

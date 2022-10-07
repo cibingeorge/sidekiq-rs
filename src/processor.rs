@@ -2,6 +2,7 @@ use crate::{
     periodic::PeriodicJob, Chain, Counter, Job, RedisPool, Scheduled, ServerMiddleware,
     StatsPublisher, UnitOfWork, Worker, WorkerRef,
 };
+use tokio_shutdown::Shutdown;
 use tracing::{error, info};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,10 +22,11 @@ pub struct Processor {
     workers: BTreeMap<String, Arc<WorkerRef>>,
     chain: Chain,
     busy_jobs: Counter,
+    shutdown: Shutdown,
 }
 
 impl Processor {
-    pub fn new(redis: RedisPool, queues: Vec<String>) -> Self {
+    pub fn new(redis: RedisPool, queues: Vec<String>, shutdown: Shutdown) -> Self {
         let busy_jobs = Counter::new(0);
 
         Self {
@@ -39,6 +41,7 @@ impl Processor {
                 .map(|queue| format!("queue:{queue}"))
                 .collect(),
             human_readable_queues: queues,
+            shutdown,
         }
     }
 
@@ -60,8 +63,13 @@ impl Processor {
 
     pub async fn process_one(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            if let WorkFetcher::NoWorkFound = self.process_one_tick_once().await? {
-                continue;
+            tokio::select! {
+                _ = self.shutdown.handle() => {},
+                res = self.process_one_tick_once() => {
+                    if let WorkFetcher::NoWorkFound = res? {
+                        continue;
+                    }
+                }
             }
 
             return Ok(());
@@ -162,14 +170,20 @@ impl Processor {
 
                 async move {
                     loop {
-                        if let Err(err) = processor.process_one().await {
-                            error!("Error leaked out the bottom: {:?}", err);
+                        tokio::select! {
+                            _ = processor.shutdown.handle() => {},
+                            res = processor.process_one() => {
+                                if let Err(err) = res {
+                                    error!("Error leaked out the bottom: {:?}", err);
+                                }        
+                            }
                         }
                     }
                 }
             });
         }
 
+        let shutdown = self.shutdown.clone();
         // Start sidekiq-web metrics publisher.
         tokio::spawn({
             let redis = self.redis.clone();
@@ -185,16 +199,22 @@ impl Processor {
                 let stats_publisher = StatsPublisher::new(hostname, queues, busy_jobs);
 
                 loop {
-                    // TODO: Use process count to meet a 5 second avg.
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    tokio::select! {
+                        _ = shutdown.handle() => break,
 
-                    if let Err(err) = stats_publisher.publish_stats(redis.clone()).await {
-                        error!("Error publishing processor stats: {:?}", err);
+                        // TODO: Use process count to meet a 5 second avg.
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            if let Err(err) = stats_publisher.publish_stats(redis.clone()).await {
+                                error!("Error publishing processor stats: {:?}", err);
+                            }
+        
+                        }
                     }
                 }
             }
         });
 
+        let shutdown = self.shutdown.clone();
         // Start retry and scheduled routines.
         tokio::spawn({
             let redis = self.redis.clone();
@@ -203,16 +223,22 @@ impl Processor {
                 let sorted_sets = vec!["retry".to_string(), "schedule".to_string()];
 
                 loop {
-                    // TODO: Use process count to meet a 5 second avg.
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    tokio::select! {
+                        _ = shutdown.handle() => break,
 
-                    if let Err(err) = sched.enqueue_jobs(chrono::Utc::now(), &sorted_sets).await {
-                        error!("Error in scheduled poller routine: {:?}", err);
+                        // TODO: Use process count to meet a 5 second avg.
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            if let Err(err) = sched.enqueue_jobs(chrono::Utc::now(), &sorted_sets).await {
+                                error!("Error in scheduled poller routine: {:?}", err);
+                            }
+        
+                        }
                     }
                 }
             }
         });
 
+        let shutdown = self.shutdown.clone();
         // Watch for periodic jobs and enqueue jobs.
         tokio::spawn({
             let redis = self.redis.clone();
@@ -220,18 +246,26 @@ impl Processor {
                 let sched = Scheduled::new(redis);
 
                 loop {
-                    // TODO: Use process count to meet a 30 second avg.
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    tokio::select! {
+                        _ = shutdown.handle() => break,
 
-                    if let Err(err) = sched.enqueue_periodic_jobs(chrono::Utc::now()).await {
-                        error!("Error in periodic job poller routine: {:?}", err);
+                        // TODO: Use process count to meet a 30 second avg.
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                            if let Err(err) = sched.enqueue_periodic_jobs(chrono::Utc::now()).await {
+                                error!("Error in periodic job poller routine: {:?}", err);
+                            }        
+                        }
                     }
                 }
             }
         });
 
+        let shutdown = self.shutdown.clone();
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await
+            tokio::select! {
+                _ = shutdown.handle() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
         }
     }
 

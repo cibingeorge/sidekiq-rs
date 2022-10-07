@@ -5,6 +5,7 @@ mod test {
     use sidekiq::{
         periodic, Processor, RedisConnectionManager, RedisPool, Scheduled, WorkFetcher, Worker,
     };
+    use tokio_shutdown::Shutdown;
     use std::sync::{Arc, Mutex};
 
     #[async_trait]
@@ -29,8 +30,9 @@ mod test {
         let redis = Pool::builder().build(manager).await.unwrap();
         redis.flushall().await;
 
+        let shutdown = Shutdown::new().unwrap();
         // Sidekiq server
-        let p = Processor::new(redis.clone(), vec![queue]);
+        let p = Processor::new(redis.clone(), vec![queue], shutdown);
 
         (p, redis)
     }
